@@ -1,7 +1,7 @@
 import { supabase } from "../../lib/supabaseClient";
 
 /* ======================================================
-   DASHBOARD STAT CARD
+   DASHBOARD STAT CARD (MONITOR KERJA GURU)
 ====================================================== */
 export async function getDashboardStats() {
   if (!supabase) {
@@ -10,32 +10,36 @@ export async function getDashboardStats() {
       classes: 0,
       subjects: 0,
       average: 0,
+      gradedToday: 0,
+      notGradedToday: 0,
+      progressToday: 0,
     };
   }
 
-  const { count: kuartalCount } = await supabase
-    .from("students_kuartal")
-    .select("*", { count: "exact", head: true });
+  const today = new Date().toISOString().split("T")[0];
 
-  const { count: ujianCount } = await supabase
-    .from("students_ujian_akhir")
-    .select("*", { count: "exact", head: true });
+  /* ================= TOTAL DASAR ================= */
+  const [{ count: studentsK }, { count: studentsU }] = await Promise.all([
+    supabase
+      .from("students_kuartal")
+      .select("*", { count: "exact", head: true }),
+    supabase
+      .from("students_ujian_akhir")
+      .select("*", { count: "exact", head: true }),
+  ]);
 
-  const { count: classes } = await supabase
-    .from("classes")
-    .select("*", { count: "exact", head: true });
+  const [{ count: classes }, { count: subjects }] = await Promise.all([
+    supabase.from("classes").select("*", { count: "exact", head: true }),
+    supabase.from("subjects").select("*", { count: "exact", head: true }),
+  ]);
 
-  const { count: subjects } = await supabase
-    .from("subjects")
-    .select("*", { count: "exact", head: true });
+  const totalStudents = (studentsK || 0) + (studentsU || 0);
 
-  const { data: gradesK } = await supabase
-    .from("grades_kuartal")
-    .select("grade");
-
-  const { data: gradesU } = await supabase
-    .from("grades_ujian_akhir")
-    .select("grade");
+  /* ================= RATA-RATA NILAI ================= */
+  const [{ data: gradesK }, { data: gradesU }] = await Promise.all([
+    supabase.from("grades_kuartal").select("grade"),
+    supabase.from("grades_ujian_akhir").select("grade"),
+  ]);
 
   const allGrades = [...(gradesK || []), ...(gradesU || [])];
 
@@ -47,11 +51,39 @@ export async function getDashboardStats() {
         )
       : 0;
 
+  /* ================= PROGRESS NILAI HARI INI ================= */
+  const [{ data: gradedKToday }, { data: gradedUToday }] = await Promise.all([
+    supabase
+      .from("grades_kuartal")
+      .select("student_id")
+      .gte("created_at", today),
+    supabase
+      .from("grades_ujian_akhir")
+      .select("student_id")
+      .gte("created_at", today),
+  ]);
+
+  const gradedSet = new Set([
+    ...(gradedKToday || []).map((g) => g.student_id),
+    ...(gradedUToday || []).map((g) => g.student_id),
+  ]);
+
+  const gradedToday = gradedSet.size;
+  const notGradedToday = Math.max(totalStudents - gradedToday, 0);
+
+  const progressToday =
+    totalStudents > 0
+      ? Math.round((gradedToday / totalStudents) * 100)
+      : 0;
+
   return {
-    students: (kuartalCount || 0) + (ujianCount || 0),
+    students: totalStudents,
     classes: classes || 0,
     subjects: subjects || 0,
     average,
+    gradedToday,
+    notGradedToday,
+    progressToday,
   };
 }
 
@@ -66,16 +98,13 @@ export async function getAverageChartData() {
     ];
   }
 
-  const { data: kuartal } = await supabase
-    .from("grades_kuartal")
-    .select("grade");
+  const [{ data: kuartal }, { data: ujian }] = await Promise.all([
+    supabase.from("grades_kuartal").select("grade"),
+    supabase.from("grades_ujian_akhir").select("grade"),
+  ]);
 
-  const { data: ujian } = await supabase
-    .from("grades_ujian_akhir")
-    .select("grade");
-
-  const avg = (rows) =>
-    rows && rows.length
+  const avg = (rows = []) =>
+    rows.length
       ? Math.round(
           rows.reduce((sum, r) => sum + Number(r.grade || 0), 0) / rows.length
         )
@@ -94,16 +123,12 @@ export async function getSubjectChartData() {
   if (!supabase) return [];
 
   const { data: subjects } = await supabase.from("subjects").select("id, name");
-
   if (!subjects || subjects.length === 0) return [];
 
-  const { data: gradesK } = await supabase
-    .from("grades_kuartal")
-    .select("grade, subject_id");
-
-  const { data: gradesU } = await supabase
-    .from("grades_ujian_akhir")
-    .select("grade, subject_id");
+  const [{ data: gradesK }, { data: gradesU }] = await Promise.all([
+    supabase.from("grades_kuartal").select("grade, subject_id"),
+    supabase.from("grades_ujian_akhir").select("grade, subject_id"),
+  ]);
 
   const allGrades = [...(gradesK || []), ...(gradesU || [])];
 
@@ -113,8 +138,10 @@ export async function getSubjectChartData() {
     const avg =
       related.length > 0
         ? Math.round(
-            related.reduce((sum, r) => sum + Number(r.grade || 0), 0) /
-              related.length
+            related.reduce(
+              (sum, r) => sum + Number(r.grade || 0),
+              0
+            ) / related.length
           )
         : 0;
 
@@ -134,26 +161,23 @@ export async function getClassChartData() {
   const today = new Date().toISOString().split("T")[0];
 
   const { data: classes } = await supabase.from("classes").select("id, name");
-
   if (!classes || classes.length === 0) return [];
 
-  const { data: studentsK } = await supabase
-    .from("students_kuartal")
-    .select("id, name, class_id");
+  const [{ data: studentsK }, { data: studentsU }] = await Promise.all([
+    supabase.from("students_kuartal").select("id, name, class_id"),
+    supabase.from("students_ujian_akhir").select("id, name, class_id"),
+  ]);
 
-  const { data: studentsU } = await supabase
-    .from("students_ujian_akhir")
-    .select("id, name, class_id");
-
-  const { data: gradesKToday } = await supabase
-    .from("grades_kuartal")
-    .select("student_id, grade")
-    .gte("created_at", today);
-
-  const { data: gradesUToday } = await supabase
-    .from("grades_ujian_akhir")
-    .select("student_id, grade")
-    .gte("created_at", today);
+  const [{ data: gradesKToday }, { data: gradesUToday }] = await Promise.all([
+    supabase
+      .from("grades_kuartal")
+      .select("student_id, grade")
+      .gte("created_at", today),
+    supabase
+      .from("grades_ujian_akhir")
+      .select("student_id, grade")
+      .gte("created_at", today),
+  ]);
 
   return classes.map((cls) => {
     const santriK = (studentsK || []).filter((s) => s.class_id === cls.id);
@@ -164,33 +188,26 @@ export async function getClassChartData() {
     const nilaiK = (gradesKToday || []).filter((g) =>
       santriK.some((s) => s.id === g.student_id)
     );
-
     const nilaiU = (gradesUToday || []).filter((g) =>
       santriU.some((s) => s.id === g.student_id)
     );
 
     const allNilai = [...nilaiK, ...nilaiU];
 
-    const avg = (rows) =>
-      rows.length > 0
+    const avg = (rows = []) =>
+      rows.length
         ? Math.round(
-            rows.reduce((sum, r) => sum + Number(r.grade || 0), 0) / rows.length
+            rows.reduce((sum, r) => sum + Number(r.grade || 0), 0) /
+              rows.length
           )
         : 0;
-
-    const average_kuartal = avg(nilaiK);
-    const average_ujian = avg(nilaiU);
-    const average = avg(allNilai);
 
     const dinilaiHariIni = new Set(allNilai.map((g) => g.student_id));
 
     const notRated = [
       ...santriK.filter((s) => !dinilaiHariIni.has(s.id)),
       ...santriU.filter((s) => !dinilaiHariIni.has(s.id)),
-    ].map((s) => ({
-      id: s.id,
-      name: s.name,
-    }));
+    ].map((s) => ({ id: s.id, name: s.name }));
 
     const progress =
       totalSantri > 0
@@ -199,9 +216,9 @@ export async function getClassChartData() {
 
     return {
       class: cls.name,
-      average,
-      average_kuartal,
-      average_ujian,
+      average: avg(allNilai),
+      average_kuartal: avg(nilaiK),
+      average_ujian: avg(nilaiU),
       progress,
       notRated,
     };

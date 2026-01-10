@@ -25,6 +25,7 @@ export async function getReportData({ type, classId }) {
     ${isKuartal ? "" : "addresses ( id, name ),"}
     grades:${gradeTable} (
       grade,
+      created_at,
       subjects ( name )
     )
   `);
@@ -78,6 +79,7 @@ export async function getPivotReportData({ type, classId }) {
     ${isKuartal ? "" : "addresses ( name ),"}
     grades:${gradeTable} (
       grade,
+      created_at,
       subjects ( name )
     )
   `);
@@ -98,32 +100,28 @@ export async function getPivotReportData({ type, classId }) {
 
 /* ======================================================
    NORMALISASI → FORMAT CSV / EXCEL (PIVOT MAPEL)
+   - Nilai ganda → ambil TERAKHIR
    - Nilai kosong → 0
    - Mapel tidak pernah ada → tidak dimasukkan
-   - Aman untuk semua kelas
 ====================================================== */
 export function normalizePivotReportData(raw = [], type) {
   if (!Array.isArray(raw) || raw.length === 0) return [];
 
-  /* 1. Kumpulkan SEMUA mapel global */
+  /* 1. Kumpulkan semua mapel yang benar-benar ADA */
   const mapelSet = new Set();
 
   raw.forEach((s) => {
-    if (Array.isArray(s.grades)) {
-      s.grades.forEach((g) => {
-        if (g.subjects?.name) {
-          mapelSet.add(g.subjects.name);
-        }
-      });
-    }
+    s.grades?.forEach((g) => {
+      if (g.subjects?.name) {
+        mapelSet.add(g.subjects.name);
+      }
+    });
   });
 
   const mapelList = Array.from(mapelSet);
-
-  /* Jika benar-benar tidak ada mapel, stop */
   if (mapelList.length === 0) return [];
 
-  /* 2. Bangun pivot row */
+  /* 2. Bangun pivot per santri */
   return raw.map((s) => {
     const row = {
       ID: s.id,
@@ -140,15 +138,30 @@ export function normalizePivotReportData(raw = [], type) {
       row[mapel] = 0;
     });
 
-    /* isi nilai jika ada */
-    if (Array.isArray(s.grades)) {
-      s.grades.forEach((g) => {
-        const mapel = g.subjects?.name;
-        if (mapel && Object.prototype.hasOwnProperty.call(row, mapel)) {
-          row[mapel] = Number(g.grade) || 0;
-        }
+    /* 3. Kelompokkan nilai per mapel */
+    const nilaiPerMapel = {};
+
+    s.grades?.forEach((g) => {
+      const mapel = g.subjects?.name;
+      if (!mapel) return;
+
+      if (!nilaiPerMapel[mapel]) {
+        nilaiPerMapel[mapel] = [];
+      }
+
+      nilaiPerMapel[mapel].push({
+        grade: Number(g.grade) || 0,
+        created_at: g.created_at,
       });
-    }
+    });
+
+    /* 4. Ambil nilai TERAKHIR */
+    Object.entries(nilaiPerMapel).forEach(([mapel, values]) => {
+      values.sort(
+        (a, b) => new Date(b.created_at) - new Date(a.created_at)
+      );
+      row[mapel] = values[0].grade;
+    });
 
     return row;
   });
