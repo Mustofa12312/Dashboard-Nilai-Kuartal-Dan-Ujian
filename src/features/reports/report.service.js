@@ -9,9 +9,13 @@ import { saveAs } from "file-saver";
 export async function getReportData({ type, classId }) {
   const isKuartal = type === "kuartal";
 
-  const studentTable = isKuartal ? "students_kuartal" : "students_ujian_akhir";
+  const studentTable = isKuartal
+    ? "students_kuartal"
+    : "students_ujian_akhir";
 
-  const gradeTable = isKuartal ? "grades_kuartal" : "grades_ujian_akhir";
+  const gradeTable = isKuartal
+    ? "grades_kuartal"
+    : "grades_ujian_akhir";
 
   const query = supabase.from(studentTable).select(`
     id,
@@ -30,37 +34,41 @@ export async function getReportData({ type, classId }) {
   }
 
   const { data, error } = await query;
+
   if (error) {
     console.error("getReportData:", error.message);
     return [];
   }
 
-  return data || [];
+  return data ?? [];
 }
 
 /* ======================================================
    NORMALISASI LAPORAN UMUM
 ====================================================== */
-export function normalizeReportData(rawData) {
+export function normalizeReportData(rawData = []) {
   return rawData.map((s) => ({
     ID: s.id,
     Nama: s.name,
     Kelas: s.classes?.name || "-",
     Alamat: s.addresses?.name || "-",
-    "Jumlah Mapel": s.grades?.length || 0,
+    "Jumlah Mapel": Array.isArray(s.grades) ? s.grades.length : 0,
   }));
 }
 
 /* ======================================================
-   LAPORAN NILAI (PIVOT MAPEL)
-   - Kuartal / Ujian Akhir
+   AMBIL DATA LAPORAN PIVOT MAPEL
 ====================================================== */
 export async function getPivotReportData({ type, classId }) {
   const isKuartal = type === "kuartal";
 
-  const studentTable = isKuartal ? "students_kuartal" : "students_ujian_akhir";
+  const studentTable = isKuartal
+    ? "students_kuartal"
+    : "students_ujian_akhir";
 
-  const gradeTable = isKuartal ? "grades_kuartal" : "grades_ujian_akhir";
+  const gradeTable = isKuartal
+    ? "grades_kuartal"
+    : "grades_ujian_akhir";
 
   const query = supabase.from(studentTable).select(`
     id,
@@ -79,31 +87,43 @@ export async function getPivotReportData({ type, classId }) {
   }
 
   const { data, error } = await query;
+
   if (error) {
     console.error("getPivotReportData:", error.message);
     return [];
   }
 
-  return data || [];
+  return data ?? [];
 }
 
 /* ======================================================
    NORMALISASI → FORMAT CSV / EXCEL (PIVOT MAPEL)
+   - Nilai kosong → 0
+   - Mapel tidak pernah ada → tidak dimasukkan
+   - Aman untuk semua kelas
 ====================================================== */
-export function normalizePivotReportData(raw, type) {
+export function normalizePivotReportData(raw = [], type) {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+
+  /* 1. Kumpulkan SEMUA mapel global */
   const mapelSet = new Set();
 
-  // kumpulkan mapel yang BENAR-BENAR ADA
   raw.forEach((s) => {
-    s.grades?.forEach((g) => {
-      if (g.subjects?.name) {
-        mapelSet.add(g.subjects.name);
-      }
-    });
+    if (Array.isArray(s.grades)) {
+      s.grades.forEach((g) => {
+        if (g.subjects?.name) {
+          mapelSet.add(g.subjects.name);
+        }
+      });
+    }
   });
 
   const mapelList = Array.from(mapelSet);
 
+  /* Jika benar-benar tidak ada mapel, stop */
+  if (mapelList.length === 0) return [];
+
+  /* 2. Bangun pivot row */
   return raw.map((s) => {
     const row = {
       ID: s.id,
@@ -115,23 +135,33 @@ export function normalizePivotReportData(raw, type) {
       row.Alamat = s.addresses?.name || "-";
     }
 
-    // isi nilai mapel (pivot)
+    /* default semua mapel = 0 */
     mapelList.forEach((mapel) => {
-      const nilai = s.grades?.find((g) => g.subjects?.name === mapel);
-      if (nilai) {
-        row[mapel] = nilai.grade;
-      }
+      row[mapel] = 0;
     });
+
+    /* isi nilai jika ada */
+    if (Array.isArray(s.grades)) {
+      s.grades.forEach((g) => {
+        const mapel = g.subjects?.name;
+        if (mapel && Object.prototype.hasOwnProperty.call(row, mapel)) {
+          row[mapel] = Number(g.grade) || 0;
+        }
+      });
+    }
 
     return row;
   });
 }
 
 /* ======================================================
-   EXPORT CSV (CLIENT ONLY)
+   EXPORT CSV
 ====================================================== */
 export function exportToCSV(data, filename) {
-  if (!data || !data.length) return;
+  if (!Array.isArray(data) || data.length === 0) {
+    alert("Data kosong, tidak bisa export");
+    return;
+  }
 
   const csv = Papa.unparse(data);
   const blob = new Blob([csv], {
@@ -142,10 +172,13 @@ export function exportToCSV(data, filename) {
 }
 
 /* ======================================================
-   EXPORT EXCEL (CLIENT ONLY)
+   EXPORT EXCEL
 ====================================================== */
 export async function exportToExcel(data, filename) {
-  if (!data || !data.length) return;
+  if (!Array.isArray(data) || data.length === 0) {
+    alert("Data kosong, tidak bisa export");
+    return;
+  }
 
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet("Laporan");
@@ -159,8 +192,10 @@ export async function exportToExcel(data, filename) {
   data.forEach((row) => worksheet.addRow(row));
 
   const buffer = await workbook.xlsx.writeBuffer();
+
   const blob = new Blob([buffer], {
-    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    type:
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   });
 
   saveAs(blob, `${filename}.xlsx`);
